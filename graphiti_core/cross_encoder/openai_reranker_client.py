@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -78,10 +79,15 @@ class OpenAIRerankerClient(CrossEncoderClient):
             ]
             for passage in passages
         ]
-        try:
-            responses = await semaphore_gather(
-                *[
-                    self.client.chat.completions.create(
+        
+        # Create individual tasks with error handling and retry logic
+        async def score_passage(openai_messages):
+            max_retries = 10
+            base_delay = 1.0
+            
+            for attempt in range(max_retries):
+                try:
+                    response = await self.client.chat.completions.create(
                         model=DEFAULT_MODEL,
                         messages=openai_messages,
                         temperature=0,
@@ -90,20 +96,59 @@ class OpenAIRerankerClient(CrossEncoderClient):
                         logprobs=True,
                         top_logprobs=2,
                     )
-                    for openai_messages in openai_messages_list
-                ]
+                    return response, None
+                except openai.RateLimitError as e:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f'Rate limit hit, retrying in {delay}s (attempt {attempt + 1}/{max_retries})')
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f'Rate limit hit after {max_retries} attempts')
+                        return None, e
+                except Exception as e:
+                    return None, e
+        
+        try:
+            # Execute all scoring tasks
+            results = await semaphore_gather(
+                *[score_passage(openai_messages) for openai_messages in openai_messages_list]
             )
-
-            responses_top_logprobs = [
-                response.choices[0].logprobs.content[0].top_logprobs
-                if response.choices[0].logprobs is not None
-                and response.choices[0].logprobs.content is not None
-                else []
-                for response in responses
-            ]
+            
+            # Count failures
+            failed_count = sum(1 for _, error in results if error is not None)
+            total_count = len(results)
+            failure_rate = failed_count / total_count if total_count > 0 else 0
+            
+            # If failure rate exceeds 10%, raise error
+            if failure_rate > 0.1:
+                logger.error(f'Too many scoring failures: {failed_count}/{total_count} ({failure_rate:.1%})')
+                # Find the first error to raise
+                for _, error in results:
+                    if error is not None:
+                        raise error
+            
+            # Process results, setting score to 0 for failed cases
             scores: list[float] = []
-            for top_logprobs in responses_top_logprobs:
+            for i, (response, error) in enumerate(results):
+                if error is not None:
+                    logger.warning(f'Failed to score passage {i}: {error}')
+                    scores.append(0.0)
+                    continue
+                
+                if response is None:
+                    scores.append(0.0)
+                    continue
+                
+                top_logprobs = (
+                    response.choices[0].logprobs.content[0].top_logprobs
+                    if response.choices[0].logprobs is not None
+                    and response.choices[0].logprobs.content is not None
+                    else []
+                )
+                
                 if len(top_logprobs) == 0:
+                    scores.append(0.0)
                     continue
                 norm_logprobs = np.exp(top_logprobs[0].logprob)
                 if bool(top_logprobs[0].token):

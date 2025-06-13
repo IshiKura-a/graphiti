@@ -17,7 +17,7 @@ limitations under the License.
 import logging
 from collections import defaultdict
 from time import time
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from neo4j import AsyncDriver, Query
@@ -372,6 +372,7 @@ async def node_similarity_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
     min_score: float = DEFAULT_MIN_SCORE,
+    key: Literal['name_embedding', 'summary_embedding'] = 'name_embedding',
 ) -> list[EntityNode]:
     # vector similarity search over entity names
     query_params: dict[str, Any] = {}
@@ -391,8 +392,8 @@ async def node_similarity_search(
             """
         + group_filter_query
         + filter_query
-        + """
-            WITH n, vector.similarity.cosine(n.name_embedding, $search_vector) AS score
+        + f"""
+            WITH n, vector.similarity.cosine(n.{key}, $search_vector) AS score
             WHERE score > $min_score"""
         + ENTITY_NODE_RETURN
         + """
@@ -693,6 +694,7 @@ async def get_relevant_nodes(
             uuid: x.uuid, 
             name: x.name,
             name_embedding: x.name_embedding,
+            summary_embedding: x.summary_embedding,
             group_id: x.group_id,
             created_at: x.created_at,
             summary: x.summary,
@@ -998,13 +1000,13 @@ def maximal_marginal_relevance(
 
 
 async def get_embeddings_for_nodes(
-    driver: AsyncDriver, nodes: list[EntityNode]
+    driver: AsyncDriver, nodes: list[EntityNode], key: Literal['name_embedding', 'summary_embedding'] = 'name_embedding'
 ) -> dict[str, list[float]]:
-    query: LiteralString = """MATCH (n:Entity)
+    query: LiteralString = f"""MATCH (n:Entity)
                               WHERE n.uuid IN $node_uuids
                               RETURN DISTINCT
                                 n.uuid AS uuid,
-                                n.name_embedding AS name_embedding
+                                n.{key} AS {key}
                     """
 
     results, _, _ = await driver.execute_query(
@@ -1014,7 +1016,7 @@ async def get_embeddings_for_nodes(
     embeddings_dict: dict[str, list[float]] = {}
     for result in results:
         uuid: str = result.get('uuid')
-        embedding: list[float] = result.get('name_embedding')
+        embedding: list[float] = result.get(key)
         if uuid is not None and embedding is not None:
             embeddings_dict[uuid] = embedding
 

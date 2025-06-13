@@ -17,6 +17,7 @@ limitations under the License.
 import logging
 from datetime import datetime
 from time import time
+from typing import Literal
 
 from dotenv import load_dotenv
 from neo4j import AsyncGraphDatabase
@@ -574,6 +575,7 @@ class Graphiti:
         group_ids: list[str] | None = None,
         num_results=DEFAULT_SEARCH_LIMIT,
         search_filter: SearchFilters | None = None,
+        key: Literal['name_embedding', 'summary_embedding'] = 'name_embedding',
     ) -> list[EntityEdge]:
         """
         Perform a hybrid search on the knowledge graph.
@@ -612,6 +614,7 @@ class Graphiti:
             EDGE_HYBRID_SEARCH_RRF if center_node_uuid is None else EDGE_HYBRID_SEARCH_NODE_DISTANCE
         )
         search_config.limit = num_results
+        search_config.node_config.key = key
 
         edges = (
             await search(
@@ -648,6 +651,7 @@ class Graphiti:
         center_node_uuid: str | None = None,
         bfs_origin_node_uuids: list[str] | None = None,
         search_filter: SearchFilters | None = None,
+        key: Literal['name_embedding', 'summary_embedding'] = 'name_embedding',
     ) -> SearchResults:
         """search_ (replaces _search) is our advanced search method that returns Graph objects (nodes and edges) rather
         than a list of facts. This endpoint allows the end user to utilize more advanced features such as filters and
@@ -656,6 +660,7 @@ class Graphiti:
         For different config recipes refer to search/search_config_recipes.
         """
 
+        config.node_config.key = key
         return await search(
             self.clients,
             query,
@@ -682,8 +687,12 @@ class Graphiti:
     async def add_triplet(self, source_node: EntityNode, edge: EntityEdge, target_node: EntityNode):
         if source_node.name_embedding is None:
             await source_node.generate_name_embedding(self.embedder)
+        if source_node.summary_embedding is None:
+            await source_node.generate_summary_embedding(self.embedder)
         if target_node.name_embedding is None:
             await target_node.generate_name_embedding(self.embedder)
+        if target_node.summary_embedding is None:
+            await target_node.generate_summary_embedding(self.embedder)
         if edge.fact_embedding is None:
             await edge.generate_embedding(self.embedder)
 
@@ -749,3 +758,51 @@ class Graphiti:
         await semaphore_gather(*[node.delete(self.driver) for node in nodes_to_delete])
         await semaphore_gather(*[edge.delete(self.driver) for edge in edges_to_delete])
         await episode.delete(self.driver)
+
+    async def check_group_id_exists(self, group_id):  
+        # 首先尝试获取具有该 group_id 的实体节点  
+        try:  
+            nodes = await EntityNode.get_by_group_ids(self.driver, [group_id])  
+            if len(nodes) > 0:  
+                return True  
+        except Exception:  
+            pass  
+        
+        # 如果没有找到实体节点，尝试获取边  
+        try:  
+            edges = await EntityEdge.get_by_group_ids(self.driver, [group_id])  
+            if len(edges) > 0:  
+                return True  
+        except Exception:  
+            pass  
+        
+        # 如果仍然没有找到，尝试获取情节节点  
+        try:  
+            episodes = await EpisodicNode.get_by_group_ids(self.driver, [group_id])  
+            if len(episodes) > 0:  
+                return True  
+        except Exception:  
+            pass  
+        
+        # 如果所有尝试都失败，则 group_id 不存在  
+        return False
+    
+    async def delete_group(self, group_id: str):
+        try:
+            edges = await EntityEdge.get_by_group_ids(self.driver, [group_id])
+        except Exception:
+            logger.warning(f'No edges found for group {group_id}')
+            edges = []
+
+        nodes = await EntityNode.get_by_group_ids(self.driver, [group_id])
+
+        episodes = await EpisodicNode.get_by_group_ids(self.driver, [group_id])
+
+        for edge in edges:
+            await edge.delete(self.driver)
+
+        for node in nodes:
+            await node.delete(self.driver)
+
+        for episode in episodes:
+            await episode.delete(self.driver)

@@ -281,7 +281,7 @@ async def node_search(
             *[
                 node_fulltext_search(driver, query, search_filter, group_ids, 2 * limit),
                 node_similarity_search(
-                    driver, query_vector, search_filter, group_ids, 2 * limit, config.sim_min_score
+                    driver, query_vector, search_filter, group_ids, 2 * limit, config.sim_min_score, config.key
                 ),
                 node_bfs_search(
                     driver, bfs_origin_node_uuids, search_filter, config.bfs_max_depth, 2 * limit
@@ -306,7 +306,7 @@ async def node_search(
         reranked_uuids = rrf(search_result_uuids, min_score=reranker_min_score)
     elif config.reranker == NodeReranker.mmr:
         search_result_uuids_and_vectors = await get_embeddings_for_nodes(
-            driver, list(node_uuid_map.values())
+            driver, list(node_uuid_map.values()), config.key
         )
 
         reranked_uuids = maximal_marginal_relevance(

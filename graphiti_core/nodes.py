@@ -291,6 +291,9 @@ class EpisodicNode(Node):
 class EntityNode(Node):
     name_embedding: list[float] | None = Field(default=None, description='embedding of the name')
     summary: str = Field(description='regional summary of surrounding edges', default_factory=str)
+    summary_embedding: list[float] | None = Field(
+        default=None, description='embedding of the summary'
+    )
     attributes: dict[str, Any] = Field(
         default={}, description='Additional attributes of the node. Dependent on node labels'
     )
@@ -300,9 +303,18 @@ class EntityNode(Node):
         text = self.name.replace('\n', ' ')
         self.name_embedding = await embedder.create(input_data=[text])
         end = time()
-        logger.debug(f'embedded {text} in {end - start} ms')
+        logger.debug(f'embedded name: {text} in {end - start} ms')
 
         return self.name_embedding
+    
+    async def generate_summary_embedding(self, embedder: EmbedderClient):
+        start = time()
+        text = self.summary.replace('\n', ' ')
+        self.summary_embedding = await embedder.create(input_data=[text])
+        end = time()
+        logger.debug(f'embedded summary: {text} in {end - start} ms')
+
+        return self.summary_embedding
 
     async def load_name_embedding(self, driver: AsyncDriver):
         query: LiteralString = """
@@ -317,12 +329,27 @@ class EntityNode(Node):
             raise NodeNotFoundError(self.uuid)
 
         self.name_embedding = records[0]['name_embedding']
+    
+    async def load_summary_embedding(self, driver: AsyncDriver):
+        query: LiteralString = """
+            MATCH (n:Entity {uuid: $uuid})
+            RETURN n.summary_embedding AS summary_embedding
+        """
+        records, _, _ = await driver.execute_query(
+            query, uuid=self.uuid, database_=DEFAULT_DATABASE, routing_='r'
+        )
+
+        if len(records) == 0:
+            raise NodeNotFoundError(self.uuid)
+
+        self.summary_embedding = records[0]['summary_embedding']
 
     async def save(self, driver: AsyncDriver):
         entity_data: dict[str, Any] = {
             'uuid': self.uuid,
             'name': self.name,
             'name_embedding': self.name_embedding,
+            'summary_embedding': self.summary_embedding,
             'group_id': self.group_id,
             'summary': self.summary,
             'created_at': self.created_at,
@@ -568,6 +595,7 @@ def get_entity_node_from_record(record: Any) -> EntityNode:
     entity_node.attributes.pop('name', None)
     entity_node.attributes.pop('group_id', None)
     entity_node.attributes.pop('name_embedding', None)
+    entity_node.attributes.pop('summary_embedding', None)
     entity_node.attributes.pop('summary', None)
     entity_node.attributes.pop('created_at', None)
 

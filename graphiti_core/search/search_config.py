@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -91,6 +92,7 @@ class NodeSearchConfig(BaseModel):
     sim_min_score: float = Field(default=DEFAULT_MIN_SCORE)
     mmr_lambda: float = Field(default=DEFAULT_MMR_LAMBDA)
     bfs_max_depth: int = Field(default=MAX_SEARCH_DEPTH)
+    key: Literal['name_embedding', 'summary_embedding'] = Field(default='name_embedding')
 
 
 class EpisodeSearchConfig(BaseModel):
