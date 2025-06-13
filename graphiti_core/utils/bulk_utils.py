@@ -131,10 +131,13 @@ async def add_nodes_and_edges_bulk_tx(
     for node in entity_nodes:
         if node.name_embedding is None:
             await node.generate_name_embedding(embedder)
+        if node.summary_embedding is None:
+            await node.generate_summary_embedding(embedder)
         entity_data: dict[str, Any] = {
             'uuid': node.uuid,
             'name': node.name,
             'name_embedding': node.name_embedding,
+            'summary_embedding': node.summary_embedding,
             'group_id': node.group_id,
             'summary': node.summary,
             'created_at': node.created_at,

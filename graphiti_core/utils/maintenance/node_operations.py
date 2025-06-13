@@ -307,6 +307,10 @@ async def resolve_extracted_nodes(
     for resolution in node_resolutions:
         resolution_id: int = resolution.get('id', -1)
         duplicate_idx: int = resolution.get('duplicate_idx', -1)
+        
+        if resolution_id < 0 or resolution_id >= len(extracted_nodes):
+            logger.warning(f'Invalid resolution ID: {resolution_id} for resolution {resolution}')
+            continue
 
         extracted_node = extracted_nodes[resolution_id]
 
