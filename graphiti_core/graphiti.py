@@ -780,6 +780,7 @@ class Graphiti:
         bfs_origin_node_uuids: list[str] | None = None,
         search_filter: SearchFilters | None = None,
         key: Literal['name_embedding', 'summary_embedding'] = 'name_embedding',
+        num_results: int = DEFAULT_SEARCH_LIMIT,
     ) -> SearchResults:
         """search_ (replaces _search) is our advanced search method that returns Graph objects (nodes and edges) rather
         than a list of facts. This endpoint allows the end user to utilize more advanced features such as filters and
@@ -789,6 +790,7 @@ class Graphiti:
         """
 
         config.node_config.key = key
+        config.limit = num_results
         return await search(
             self.clients,
             query,
