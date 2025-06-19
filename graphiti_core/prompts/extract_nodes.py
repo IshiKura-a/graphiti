@@ -92,11 +92,14 @@ Instructions:
 You are given a conversation context and a CURRENT MESSAGE. Your task is to extract **entity nodes** mentioned **explicitly or implicitly** in the CURRENT MESSAGE.
 
 1. **Speaker Extraction**: Always extract the speaker (the part before the colon `:` in each dialogue line) as the first entity node.
-   - If the speaker is mentioned again in the message, treat both mentions as a **single entity**.
+   - If the speaker is mentioned again in the message or in another session, don't treat it as another **entity**. For example, no matter "user" appears how many times in conversations, there should only be one "user" entity.
 
 2. **Entity Identification**:
+   - Entities, concepts, or actors spoken by the speaker should be extracted all.
    - Extract all significant entities, concepts, or actors that are **explicitly or implicitly** mentioned in the CURRENT MESSAGE.
    - **Exclude** entities mentioned only in the PREVIOUS MESSAGES (they are for context only).
+   - Entities, concepts, or actors related to speaker's self experience or personal stuff should be emitted in priority, for example:
+     the place that speaker go, an object that speaker use, a person that is close to the speaker, a work that speaker do...
 
 3. **Entity Classification**:
    - Use the descriptions in ENTITY TYPES to classify each extracted entity.
@@ -256,7 +259,8 @@ def extract_attributes(context: dict[str, Any]) -> list[Message]:
         1. Do not hallucinate entity property values if they cannot be found in the current context.
         2. Only use the provided MESSAGES and ENTITY to set attribute values.
         3. The summary attribute represents a summary of the ENTITY, and should be updated with new information about the Entity from the MESSAGES. 
-            Summaries must be no longer than 250 words.
+        4. The summary attribute should be an up-to-date description of the ENTITY, based solely on information found in the MESSAGES. 
+        Do not include general knowledge, personality assumptions, or facts that are not explicitly or implicitly stated in the messages.
         
         <ENTITY>
         {context['node']}

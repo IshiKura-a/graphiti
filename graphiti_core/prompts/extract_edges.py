@@ -109,9 +109,16 @@ You may use information from the PREVIOUS MESSAGES only to disambiguate referenc
 2. Each fact must involve two **distinct** entities.
 3. Use a SCREAMING_SNAKE_CASE string as the `relation_type` (e.g., FOUNDED, WORKS_AT).
 4. Do not emit duplicate or semantically redundant facts.
-5. The `fact_text` should quote or closely paraphrase the original source sentence(s).
+5. The `fact_text` should quote or closely paraphrase the original source sentence(s). `fact_text` should include both the two **distinct** entities it involved, 
+    for example, if there are two **distinct** entities "dog" and "cat" and a source sentence "He eats it!", quoto as "dog eats cat" instead of "he eats her" or "eats it" between two entities "dog" and "cat", state the two entity names clear.
 6. Use `REFERENCE_TIME` to resolve vague or relative temporal expressions (e.g., "last week").
 7. Do **not** hallucinate or infer temporal bounds from unrelated events.
+8. Common sense could be used to resolve vague future time, for example:
+    a. "I will go back to campus when next semester begins." (now it's April, said in `REFERENCE_TIME`)
+    Using common sense, you should know I go back to campus in September, and the valid_at for going to campus should be set to September, not October, due to common sense that most schools start in September.
+
+    b. "This is my first year in college." (now it's October, said in `REFERENCE_TIME`)
+    Using common sense, you should know I started college from September, not October, and the valid_at for going to campus should be set to September, due to common sense that most schools start in September.
 
 # DATETIME RULES
 
@@ -120,6 +127,7 @@ You may use information from the PREVIOUS MESSAGES only to disambiguate referenc
 - If a change/termination is expressed, set `invalid_at` to the relevant timestamp.
 - Leave both fields `null` if no explicit or resolvable time is stated.
 - If only a date is mentioned (no time), assume 00:00:00.
+- If only a month or season is mentioned, assume the 1st day of this month at 00:00:00.
 - If only a year is mentioned, use January 1st at 00:00:00.
         """,
         ),

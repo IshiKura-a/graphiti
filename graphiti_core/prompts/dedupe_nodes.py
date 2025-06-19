@@ -150,6 +150,10 @@ def nodes(context: dict[str, Any]) -> list[Message]:
         - They are related but distinct.
         - They have similar names or purposes but refer to separate instances or concepts.
 
+        The entity MUST be a duplicate of its duplication candidate if:
+        - The entity is named "user" or any first person calls(for example "I") and the duplication candidate is also named "user" or any first person calls(for example "I")
+        - The entity is a speaker and the duplication candidate is also a speaker with the same name.
+
         Task:
         Your response will be a list called entity_resolutions which contains one entry for each entity.
         
