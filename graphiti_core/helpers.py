@@ -16,18 +16,23 @@ limitations under the License.
 
 import asyncio
 import os
+import re
 from collections.abc import Coroutine
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 from dotenv import load_dotenv
 from neo4j import time as neo4j_time
 from numpy._typing import NDArray
+from pydantic import BaseModel
 from typing_extensions import LiteralString
+
+from graphiti_core.errors import GroupIdValidationError
 
 load_dotenv()
 
-DEFAULT_DATABASE = os.getenv('DEFAULT_DATABASE', None)
+DEFAULT_DATABASE = os.getenv('DEFAULT_DATABASE', 'default_db')
 USE_PARALLEL_RUNTIME = bool(os.getenv('USE_PARALLEL_RUNTIME', False))
 SEMAPHORE_LIMIT = int(os.getenv('SEMAPHORE_LIMIT', 20))
 MAX_REFLEXION_ITERATIONS = int(os.getenv('MAX_REFLEXION_ITERATIONS', 0))
@@ -38,8 +43,14 @@ RUNTIME_QUERY: LiteralString = (
 )
 
 
-def parse_db_date(neo_date: neo4j_time.DateTime | None) -> datetime | None:
-    return neo_date.to_native() if neo_date else None
+def parse_db_date(neo_date: neo4j_time.DateTime | str | None) -> datetime | None:
+    return (
+        neo_date.to_native()
+        if isinstance(neo_date, neo4j_time.DateTime)
+        else datetime.fromisoformat(neo_date)
+        if neo_date
+        else None
+    )
 
 
 def lucene_sanitize(query: str) -> str:
@@ -88,12 +99,72 @@ def normalize_l2(embedding: list[float]) -> NDArray:
 # Use this instead of asyncio.gather() to bound coroutines
 async def semaphore_gather(
     *coroutines: Coroutine,
-    max_coroutines: int = SEMAPHORE_LIMIT,
-):
-    semaphore = asyncio.Semaphore(max_coroutines)
+    max_coroutines: int | None = None,
+) -> list[Any]:
+    semaphore = asyncio.Semaphore(max_coroutines or SEMAPHORE_LIMIT)
 
     async def _wrap_coroutine(coroutine):
         async with semaphore:
             return await coroutine
 
     return await asyncio.gather(*(_wrap_coroutine(coroutine) for coroutine in coroutines))
+
+
+def validate_group_id(group_id: str) -> bool:
+    """
+    Validate that a group_id contains only ASCII alphanumeric characters, dashes, and underscores.
+
+    Args:
+        group_id: The group_id to validate
+
+    Returns:
+        True if valid, False otherwise
+
+    Raises:
+        GroupIdValidationError: If group_id contains invalid characters
+    """
+
+    # Allow empty string (default case)
+    if not group_id:
+        return True
+
+    # Check if string contains only ASCII alphanumeric characters, dashes, or underscores
+    # Pattern matches: letters (a-z, A-Z), digits (0-9), hyphens (-), and underscores (_)
+    if not re.match(r'^[a-zA-Z0-9_-]+$', group_id):
+        raise GroupIdValidationError(group_id)
+
+    return True
+
+
+def validate_excluded_entity_types(
+    excluded_entity_types: list[str] | None, entity_types: dict[str, BaseModel] | None = None
+) -> bool:
+    """
+    Validate that excluded entity types are valid type names.
+
+    Args:
+        excluded_entity_types: List of entity type names to exclude
+        entity_types: Dictionary of available custom entity types
+
+    Returns:
+        True if valid
+
+    Raises:
+        ValueError: If any excluded type names are invalid
+    """
+    if not excluded_entity_types:
+        return True
+
+    # Build set of available type names
+    available_types = {'Entity'}  # Default type is always available
+    if entity_types:
+        available_types.update(entity_types.keys())
+
+    # Check for invalid type names
+    invalid_types = set(excluded_entity_types) - available_types
+    if invalid_types:
+        raise ValueError(
+            f'Invalid excluded entity types: {sorted(invalid_types)}. Available types: {sorted(available_types)}'
+        )
+
+    return True

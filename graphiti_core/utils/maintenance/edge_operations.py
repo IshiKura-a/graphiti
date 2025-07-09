@@ -19,7 +19,9 @@ from datetime import datetime
 from time import time
 
 from pydantic import BaseModel
+from typing_extensions import LiteralString
 
+from graphiti_core.driver.driver import GraphDriver
 from graphiti_core.edges import (
     CommunityEdge,
     EntityEdge,
@@ -27,7 +29,7 @@ from graphiti_core.edges import (
     create_entity_edge_embeddings,
 )
 from graphiti_core.graphiti_types import GraphitiClients
-from graphiti_core.helpers import MAX_REFLEXION_ITERATIONS, semaphore_gather
+from graphiti_core.helpers import DEFAULT_DATABASE, MAX_REFLEXION_ITERATIONS, semaphore_gather
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.llm_client.config import ModelSize
 from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
@@ -61,6 +63,28 @@ def build_episodic_edges(
     return episodic_edges
 
 
+def build_duplicate_of_edges(
+    episode: EpisodicNode,
+    created_at: datetime,
+    duplicate_nodes: list[tuple[EntityNode, EntityNode]],
+) -> list[EntityEdge]:
+    is_duplicate_of_edges: list[EntityEdge] = [
+        EntityEdge(
+            source_node_uuid=source_node.uuid,
+            target_node_uuid=target_node.uuid,
+            name='IS_DUPLICATE_OF',
+            group_id=episode.group_id,
+            fact=f'{source_node.name} is a duplicate of {target_node.name}',
+            episodes=[episode.uuid],
+            created_at=created_at,
+            valid_at=created_at,
+        )
+        for source_node, target_node in duplicate_nodes
+    ]
+
+    return is_duplicate_of_edges
+
+
 def build_community_edges(
     entity_nodes: list[EntityNode],
     community_node: CommunityNode,
@@ -84,6 +108,7 @@ async def extract_edges(
     episode: EpisodicNode,
     nodes: list[EntityNode],
     previous_episodes: list[EpisodicNode],
+    edge_type_map: dict[tuple[str, str], list[str]],
     group_id: str = '',
     edge_types: dict[str, BaseModel] | None = None,
 ) -> list[EntityEdge]:
@@ -92,10 +117,17 @@ async def extract_edges(
     extract_edges_max_tokens = 16384
     llm_client = clients.llm_client
 
+    edge_type_signature_map: dict[str, tuple[str, str]] = {
+        edge_type: signature
+        for signature, edge_types in edge_type_map.items()
+        for edge_type in edge_types
+    }
+
     edge_types_context = (
         [
             {
                 'fact_type_name': type_name,
+                'fact_type_signature': edge_type_signature_map.get(type_name, ('Entity', 'Entity')),
                 'fact_type_description': type_model.__doc__,
             }
             for type_name, type_model in edge_types.items()
@@ -107,7 +139,10 @@ async def extract_edges(
     # Prepare context for LLM
     context = {
         'episode_content': episode.content,
-        'nodes': [{'id': idx, 'name': node.name} for idx, node in enumerate(nodes)],
+        'nodes': [
+            {'id': idx, 'name': node.name, 'entity_types': node.labels}
+            for idx, node in enumerate(nodes)
+        ],
         'previous_episodes': [ep.content for ep in previous_episodes],
         'reference_time': episode.valid_at,
         'edge_types': edge_types_context,
@@ -260,10 +295,9 @@ async def resolve_extracted_edges(
     driver = clients.driver
     llm_client = clients.llm_client
     embedder = clients.embedder
-
     await create_entity_edge_embeddings(embedder, extracted_edges)
 
-    search_results: tuple[list[list[EntityEdge]], list[list[EntityEdge]]] = await semaphore_gather(
+    search_results = await semaphore_gather(
         get_relevant_edges(driver, extracted_edges, SearchFilters()),
         get_edge_invalidation_candidates(driver, extracted_edges, SearchFilters(), 0.2),
     )
@@ -571,3 +605,34 @@ async def dedupe_edge_list(
         unique_edges.append(edge)
 
     return unique_edges
+
+
+async def filter_existing_duplicate_of_edges(
+    driver: GraphDriver, duplicates_node_tuples: list[tuple[EntityNode, EntityNode]]
+) -> list[tuple[EntityNode, EntityNode]]:
+    query: LiteralString = """
+        UNWIND $duplicate_node_uuids AS duplicate_tuple
+        MATCH (n:Entity {uuid: duplicate_tuple[0]})-[r:RELATES_TO {name: 'IS_DUPLICATE_OF'}]->(m:Entity {uuid: duplicate_tuple[1]})
+        RETURN DISTINCT
+            n.uuid AS source_uuid,
+            m.uuid AS target_uuid
+    """
+
+    duplicate_nodes_map = {
+        (source.uuid, target.uuid): (source, target) for source, target in duplicates_node_tuples
+    }
+
+    records, _, _ = await driver.execute_query(
+        query,
+        duplicate_node_uuids=list(duplicate_nodes_map.keys()),
+        database_=DEFAULT_DATABASE,
+        routing_='r',
+    )
+
+    # Remove duplicates that already have the IS_DUPLICATE_OF edge
+    for record in records:
+        duplicate_tuple = (record.get('source_uuid'), record.get('target_uuid'))
+        if duplicate_nodes_map.get(duplicate_tuple):
+            duplicate_nodes_map.pop(duplicate_tuple)
+
+    return list(duplicate_nodes_map.values())

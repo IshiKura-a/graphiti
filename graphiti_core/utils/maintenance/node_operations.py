@@ -40,6 +40,7 @@ from graphiti_core.search.search_config import SearchResults
 from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.datetime_utils import utc_now
+from graphiti_core.utils.maintenance.edge_operations import filter_existing_duplicate_of_edges
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ async def extract_nodes(
     episode: EpisodicNode,
     previous_episodes: list[EpisodicNode],
     entity_types: dict[str, BaseModel] | None = None,
+    excluded_entity_types: list[str] | None = None,
 ) -> list[EntityNode]:
     start = time()
     llm_client = clients.llm_client
@@ -153,6 +155,11 @@ async def extract_nodes(
             'entity_type_name'
         )
 
+        # Check if this entity type should be excluded
+        if excluded_entity_types and entity_type_name in excluded_entity_types:
+            logger.debug(f'Excluding entity "{extracted_entity.name}" of type "{entity_type_name}"')
+            continue
+
         labels: list[str] = list({'Entity', str(entity_type_name)})
 
         new_node = EntityNode(
@@ -225,8 +232,9 @@ async def resolve_extracted_nodes(
     episode: EpisodicNode | None = None,
     previous_episodes: list[EpisodicNode] | None = None,
     entity_types: dict[str, BaseModel] | None = None,
-) -> tuple[list[EntityNode], dict[str, str]]:
+) -> tuple[list[EntityNode], dict[str, str], list[tuple[EntityNode, EntityNode]]]:
     llm_client = clients.llm_client
+    driver = clients.driver
 
     search_results: list[SearchResults] = await semaphore_gather(
         *[
@@ -295,10 +303,11 @@ async def resolve_extracted_nodes(
 
     resolved_nodes: list[EntityNode] = []
     uuid_map: dict[str, str] = {}
+    node_duplicates: list[tuple[EntityNode, EntityNode]] = []
     for resolution in node_resolutions:
-        resolution_id = resolution.get('id', -1)
-        duplicate_idx = resolution.get('duplicate_idx', -1)
-        
+        resolution_id: int = resolution.get('id', -1)
+        duplicate_idx: int = resolution.get('duplicate_idx', -1)
+
         if resolution_id < 0 or resolution_id >= len(extracted_nodes):
             logger.warning(f'Invalid resolution ID: {resolution_id} for resolution {resolution}')
             continue
@@ -311,14 +320,26 @@ async def resolve_extracted_nodes(
             else extracted_node
         )
 
-        resolved_node.name = resolution.get('name')
+        # resolved_node.name = resolution.get('name')
 
         resolved_nodes.append(resolved_node)
         uuid_map[extracted_node.uuid] = resolved_node.uuid
 
+        additional_duplicates: list[int] = resolution.get('additional_duplicates', [])
+        for idx in additional_duplicates:
+            existing_node = existing_nodes[idx] if idx < len(existing_nodes) else resolved_node
+            if existing_node == resolved_node:
+                continue
+
+            node_duplicates.append((resolved_node, existing_nodes[idx]))
+
     logger.debug(f'Resolved nodes: {[(n.name, n.uuid) for n in resolved_nodes]}')
 
-    return resolved_nodes, uuid_map
+    new_node_duplicates: list[
+        tuple[EntityNode, EntityNode]
+    ] = await filter_existing_duplicate_of_edges(driver, node_duplicates)
+
+    return resolved_nodes, uuid_map, new_node_duplicates
 
 
 async def extract_attributes_from_nodes(
@@ -330,7 +351,6 @@ async def extract_attributes_from_nodes(
 ) -> list[EntityNode]:
     llm_client = clients.llm_client
     embedder = clients.embedder
-
     updated_nodes: list[EntityNode] = await semaphore_gather(
         *[
             extract_attributes_from_node(
